@@ -1,17 +1,27 @@
 {
-  "name": "scratch-2026-11-12-5f5c0c",
-  "version": "0.1.0",
+  "name": "overtone",
+  "version": "0.2.0",
   "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "typecheck": "tsc --noEmit",
+    "build:client": "npm run build -w @overtone/client",
+    "test:client": "tsx --test packages/client/test/*.test.ts"
   },
   "dependencies": {
+    "@overtone/client": "*",
+    "lucide-react": "*",
     "next": "16.4.6",
     "react": "19.3.0",
-    "react-dom": "19.3.0"
+    "react-dom": "19.3.0",
+    "react-markdown": "*",
+    "remark-gfm": "*"
   },
   "devDependencies": {
     "@tailwindcss/turbopack": "4.3.3",
@@ -21,6 +31,8 @@
     "eslint": "^9",
     "eslint-config-next": "16.4.6",
     "tailwindcss": "4.3.3",
+    "tsup": "*",
+    "tsx": "*",
     "typescript": "^5"
   }
 }

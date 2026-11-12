@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "overtone"
+version = "0.2.0"
+description = "Headless notebook agent on Microsoft Agent Framework: ground Claude in your sources, chat with citations, generate audio overviews and podcasts, and talk to your notebook live."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+  "agent-framework-core>=1.25",
+  "agent-framework-anthropic",
+  "fastapi>=0.115",
+  "uvicorn>=0.30",
+  "httpx>=0.27",
+  "python-multipart>=0.0.9",
+  "pypdf>=5.0",
+  "python-docx>=1.1",
+  "pydantic>=2.7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.24"]
+
+[project.scripts]
+overtone = "overtone.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["overtone"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]

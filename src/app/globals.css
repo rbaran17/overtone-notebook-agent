@@ -1,26 +1,181 @@
 @import "tailwindcss";
 
+/*
+ * Overtone design tokens. Components use the semantic Tailwind classes these
+ * map to (bg-canvas, bg-surface, text-ink, border-line, bg-accent, …) and
+ * never hard-coded colours, so light and dark stay in step.
+ */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --canvas: #f2efe8;
+  --surface: #fbfaf7;
+  --surface-2: #efebe2;
+  --line: #ddd6c9;
+  --line-strong: #c9c1b1;
+  --ink: #1c1a16;
+  --ink-2: #57524a;
+  --ink-3: #8a8478;
+  --accent: #d4472a;
+  --accent-hover: #bd3c21;
+  --accent-ink: #ffffff;
+  --accent-soft: #f6e0d8;
+  --ok: #2f7d5b;
+  --warn: #a86a12;
+  --danger: #b93226;
+  --danger-soft: #f8e1dd;
+  --shadow: 0 1px 2px rgb(40 30 10 / 0.06), 0 8px 24px -12px rgb(40 30 10 / 0.18);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    --canvas: #100f0e;
+    --surface: #1a1917;
+    --surface-2: #242220;
+    --line: #33302b;
+    --line-strong: #4a463f;
+    --ink: #f2eee5;
+    --ink-2: #b8b1a4;
+    --ink-3: #7d776c;
+    --accent: #f0633f;
+    --accent-hover: #f47a5a;
+    --accent-ink: #1a0d08;
+    --accent-soft: #3a1d14;
+    --ok: #5bbd92;
+    --warn: #e0a84a;
+    --danger: #ef6a5c;
+    --danger-soft: #3b1815;
+    --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 12px 32px -12px rgb(0 0 0 / 0.6);
   }
 }
 
+@theme inline {
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-soft: var(--accent-soft);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+  --font-display: var(--font-display-serif), ui-serif, Georgia, serif;
+  --shadow-panel: var(--shadow);
+}
+
+html {
+  color-scheme: light dark;
+}
+
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: var(--font-sans);
+}
+
+::selection {
+  background: var(--accent-soft);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Thin, quiet scrollbars inside panels. */
+.scroll-quiet {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+
+/* Rendered Markdown (chat answers, generated documents). */
+.prose-ot {
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+.prose-ot > :first-child { margin-top: 0; }
+.prose-ot > :last-child { margin-bottom: 0; }
+.prose-ot p { margin: 0.7em 0; }
+.prose-ot h1, .prose-ot h2, .prose-ot h3, .prose-ot h4 {
+  font-weight: 600;
+  line-height: 1.25;
+  margin: 1.3em 0 0.5em;
+  text-wrap: balance;
+}
+.prose-ot h1 { font-family: var(--font-display); font-weight: 400; font-size: 1.9em; }
+.prose-ot h2 { font-size: 1.2em; }
+.prose-ot h3 { font-size: 1.05em; }
+.prose-ot ul, .prose-ot ol { margin: 0.6em 0; padding-left: 1.4em; }
+.prose-ot ul { list-style: disc; }
+.prose-ot ol { list-style: decimal; }
+.prose-ot li { margin: 0.25em 0; }
+.prose-ot li::marker { color: var(--ink-3); }
+.prose-ot a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.prose-ot strong { font-weight: 600; }
+.prose-ot blockquote {
+  border-left: 2px solid var(--line-strong);
+  padding-left: 0.9em;
+  color: var(--ink-2);
+  margin: 0.8em 0;
+}
+.prose-ot code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  background: var(--surface-2);
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+}
+.prose-ot pre {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.8em 1em;
+  overflow-x: auto;
+  margin: 0.8em 0;
+}
+.prose-ot pre code { background: none; padding: 0; }
+.prose-ot hr { border: 0; border-top: 1px solid var(--line); margin: 1.4em 0; }
+.prose-ot table {
+  display: block;
+  overflow-x: auto;
+  border-collapse: collapse;
+  margin: 0.9em 0;
+  font-size: 0.94em;
+}
+.prose-ot th, .prose-ot td {
+  border: 1px solid var(--line);
+  padding: 0.4em 0.7em;
+  text-align: left;
+  vertical-align: top;
+}
+.prose-ot th { background: var(--surface-2); font-weight: 600; }
+
+@keyframes ot-bar {
+  0%, 100% { transform: scaleY(0.35); }
+  50% { transform: scaleY(1); }
+}
+/* Animated level-meter bars: <span class="ot-bars"><i></i><i></i><i></i><i></i></span> */
+.ot-bars { display: inline-flex; align-items: center; gap: 2px; height: 14px; }
+.ot-bars i {
+  width: 2px;
+  height: 100%;
+  border-radius: 1px;
+  background: currentColor;
+  transform-origin: center;
+  animation: ot-bar 0.9s ease-in-out infinite;
+}
+.ot-bars i:nth-child(2) { animation-delay: -0.6s; }
+.ot-bars i:nth-child(3) { animation-delay: -0.3s; }
+.ot-bars i:nth-child(4) { animation-delay: -0.75s; }
+.ot-bars.paused i { animation-play-state: paused; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ot-bars i { animation: none; transform: scaleY(0.6); }
 }

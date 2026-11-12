@@ -1,0 +1,19 @@
+{
+  "name": "@overtone/client",
+  "version": "0.2.0",
+  "description": "Typed TypeScript client for the Overtone REST API (browser and Node 20+).",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": { "types": "./src/index.ts", "default": "./src/index.ts" }
+  },
+  "publishConfig": {
+    "exports": {
+      ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" }
+    }
+  },
+  "files": ["dist", "README.md"],
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts --clean"
+  }
+}
