@@ -275,6 +275,29 @@ async def test_history_is_persisted_in_order_user_first(engine: Any) -> None:
     assert history[0].created_at < history[1].created_at
 
 
+async def test_history_stays_in_order_when_the_clock_does_not_advance(
+    engine: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Turns that land in the same millisecond (a fast model on a fast machine) must still sort correctly."""
+    import datetime as real
+
+    class FrozenClock(real.datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> "FrozenClock":
+            return cls(2026, 1, 1, 12, 0, 0, tzinfo=tz)
+
+    notebook, _ = await _notebook_with_sources(engine)
+    monkeypatch.setattr("overtone.engine.datetime", FrozenClock)
+    monkeypatch.setattr("overtone.engine.now_iso", lambda: "2026-01-01T12:00:00.000Z")
+    for question in ("First question?", "Second question?", "Third question?"):
+        await engine.chat.send(notebook.id, question)
+    history = await engine.chat.history(notebook.id)
+    assert [m.role for m in history] == ["user", "assistant"] * 3
+    assert [m.content for m in history[::2]] == ["First question?", "Second question?", "Third question?"]
+    stamps = [m.created_at for m in history]
+    assert stamps == sorted(set(stamps)), "timestamps must be strictly increasing"
+
+
 async def test_stream_yields_text_citations_then_done(engine: Any) -> None:
     notebook, _ = await _notebook_with_sources(engine)
     events = [e async for e in engine.chat.stream(notebook.id, "Summarise the sources.")]

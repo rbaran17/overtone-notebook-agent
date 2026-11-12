@@ -65,6 +65,18 @@ def _not_found(what: str, id: str) -> OvertoneError:
     return OvertoneError(f"{what} {id} not found.", status=404, code="not_found")
 
 
+def _stamp_after(previous: str | None) -> str:
+    """A timestamp for a new chat message that always sorts after `previous`.
+
+    History is ordered by timestamp at millisecond resolution, so two messages written within the
+    same millisecond (a fast model, a fast machine) would otherwise tie or sort out of order.
+    """
+    now = datetime.now(timezone.utc)
+    if previous:
+        now = max(now, datetime.fromisoformat(previous.replace("Z", "+00:00")) + timedelta(milliseconds=1))
+    return now.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
 @dataclass
 class OneShotResult:
     notebook: Notebook
@@ -354,7 +366,11 @@ class _Chat:
             history = await self.history(notebook_id)
 
             question = ChatMessage(
-                id=str(uuid.uuid4()), notebook_id=notebook_id, role="user", content=text, created_at=now_iso()
+                id=str(uuid.uuid4()),
+                notebook_id=notebook_id,
+                role="user",
+                content=text,
+                created_at=_stamp_after(history[-1].created_at if history else None),
             )
             await e.storage.put(MESSAGES, question.to_json())
 
@@ -366,16 +382,13 @@ class _Chat:
                     citations.append(Citation.model_validate(event["citation"]))
                 yield event
 
-            # Guarantee the reply sorts after the question even within the same millisecond.
-            asked = datetime.fromisoformat(question.created_at.replace("Z", "+00:00"))
-            replied = max(datetime.now(timezone.utc), asked + timedelta(milliseconds=1))
             reply = ChatMessage(
                 id=str(uuid.uuid4()),
                 notebook_id=notebook_id,
                 role="assistant",
                 content="".join(content),
                 citations=citations,
-                created_at=replied.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+                created_at=_stamp_after(question.created_at),
             )
             await e.storage.put(MESSAGES, reply.to_json())
             await e._touch_notebook(notebook_id)

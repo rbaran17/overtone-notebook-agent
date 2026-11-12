@@ -186,7 +186,7 @@ Two modes: **conversation** (talk to the notebook) and **podcast** (pause an epi
 ## Tests and evaluation
 
 ```bash
-cd backend && python -m pytest          # 462 tests: engine, agents, workflows, API, CLI, evals; no network
+cd backend && python -m pytest          # 463 tests: engine, agents, workflows, API, CLI, evals; no network
 overtone eval --mock                    # evaluation suite on the stand-in model
 npm run test:client                     # 32 tests: TypeScript client and live voice session
 npm run lint && npm run typecheck       # web UI
