@@ -1,0 +1,68 @@
+name: Bug report
+description: Report something in Overtone that does not work as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before you submit, remove API keys, tokens and other secrets from anything you paste below, including logs and `backend/.env` contents.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What went wrong?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The smallest set of steps that shows the problem.
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+      description: What did you expect to happen?
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Backend / API
+        - CLI
+        - Web UI
+        - TypeScript client
+        - Live voice
+        - Docs
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      description: Were you running with the mock model or with real providers?
+      options:
+        - Mock model
+        - Real providers
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Python version, Node version, and the output of `overtone info`.
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant log output. Remove secrets first.
+      render: shell

@@ -40,12 +40,14 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# overtone local data
-.overtone/
-/packages/core/dist/
+# overtone local data and example output
+.overtone*/
+eval-report*.md
+/episode.mp3
+/packages/client/dist/
 
 # python
-/backend/.venv/
+.venv/
 __pycache__/
 *.egg-info/
 .pytest_cache/

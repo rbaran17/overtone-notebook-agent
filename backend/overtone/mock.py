@@ -32,6 +32,36 @@ def _clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + "…"
 
 
+_STOPWORDS = frozenset(
+    "about after again also been being both does doing each from have here into just more most much only other "
+    "over said same should some such than that their them then there these they this those through under very "
+    "want what when where which while will with would your".split()
+)
+
+
+def _keywords(text: str) -> set[str]:
+    """Lowercased content words, crudely stemmed so "riders" matches "rider"."""
+    words = re.findall(r"[^\W\d_]{4,}", text.lower())
+    return {w[:-1] if w.endswith("s") else w for w in words if w not in _STOPWORDS}
+
+
+def _best_matches(
+    question: str, sources: list[tuple[str, list[tuple[str, str]]]], limit: int = 3
+) -> list[tuple[str, str, str]]:
+    """The passages sharing the most words with the question, as (source title, number, text).
+
+    Plain keyword overlap: enough to make the offline demo point at relevant passages.
+    """
+    wanted = _keywords(question)
+    scored = [
+        (len(wanted & _keywords(text)), -int(number), title, number, text)
+        for title, passages in sources
+        for number, text in passages
+    ]
+    best = sorted((s for s in scored if s[0] > 0), reverse=True)[:limit]
+    return [(title, number, text) for _, _, title, number, text in best]
+
+
 class MockChatClient(FunctionInvocationLayer, BaseChatClient):  # type: ignore[type-arg, misc]
     """Stands in for a real model. `delay` is the pause between streamed words, in seconds."""
 
@@ -124,15 +154,15 @@ class MockChatClient(FunctionInvocationLayer, BaseChatClient):  # type: ignore[t
             return "This is a mock answer, and the sources are empty."
 
         if instructions == RESEARCHER_INSTRUCTIONS:
-            lines = [
-                f'This is a mock answer (no model was called). You asked: "{question}". '
-                "Here is what the selected sources open with.",
-                "",
-            ]
-            for title, passages in sources[:3]:
-                if passages:
-                    number, text = passages[0]
-                    lines.append(f"- **{title}** begins: {_clip(text, 220)} [{number}]")
+            matches = _best_matches(question, sources)
+            if matches:
+                intro, picked = "These passages match your question most closely.", matches
+            else:
+                intro = "Here is what the selected sources open with."
+                picked = [(title, *passages[0]) for title, passages in sources[:3] if passages]
+            lines = [f'This is a mock answer (no model was called). You asked: "{question}". {intro}', ""]
+            for title, number, text in picked:
+                lines.append(f"- **{title}**: {_clip(text, 220)} [{number}]")
             return "\n".join(lines)
 
         heading = "Mock document"

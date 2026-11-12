@@ -64,6 +64,7 @@ Commands:
   audio <notebookId>                   Make an audio overview from a notebook's sources
   generate <notebookId>                Make a document from a notebook's sources
   artifacts list <notebookId>          List a notebook's generated artifacts
+  eval                                 Run the evaluation suite (--mock, --report, --only)
 
 Sources: a file path, an http(s):// URL, or - to read plain text from stdin.
 
@@ -87,6 +88,7 @@ Document options (doc, generate):
 Other:
   serve: --port <n> --host <h> --api-key <k> (or $OVERTONE_API_KEY) --cors[=origin,...]
   ask:   -q, --question "..."
+  eval:  --mock (offline stand-in model)  --report <file.md>  --only <area|case,...>
 
 Examples:
   overtone podcast ./report.pdf https://example.com/post --format deep_dive --out episode.mp3
@@ -94,6 +96,7 @@ Examples:
   overtone ask ./paper.pdf -q "What are the main limitations?"
   cat notes.txt | overtone podcast - --format brief
   overtone serve --port 8787 --cors http://localhost:3000
+  overtone eval --mock --report eval-report.md
 """
 
 _ENV_LINE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$")
@@ -315,6 +318,9 @@ def _add_global_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--host", metavar="HOST", default=s)
     parser.add_argument("--api-key", dest="api_key", metavar="KEY", default=s)
     parser.add_argument("--cors", nargs="?", const="*", metavar="ORIGINS", default=s)
+    parser.add_argument("--mock", action="store_true", default=s)
+    parser.add_argument("--report", metavar="PATH", default=s)
+    parser.add_argument("--only", metavar="NAMES", default=s)
 
 
 _COMMAND_HELP: dict[str, str] = {
@@ -329,6 +335,7 @@ _COMMAND_HELP: dict[str, str] = {
     "audio": "Make an audio overview from a notebook's sources",
     "generate": "Make a document from a notebook's sources",
     "artifacts": "list <notebookId>",
+    "eval": "Run the evaluation suite",
 }
 
 
@@ -547,6 +554,8 @@ class _Runner:
             return await self.generate(args)
         if command == "artifacts":
             return await self.artifacts(args)
+        if command == "eval":
+            return await self.evaluate()
         self.stderr(f"Unknown command: {command}\n\n{USAGE}")
         return 2
 
@@ -739,6 +748,63 @@ class _Runner:
             ),
         )
         return 0
+
+    async def evaluate(self) -> int:
+        """Run the evaluation suite; exit code 1 when any check fails."""
+        from .agents import create_runtime
+        from .evals import AREAS, list_cases, run_evals
+        from .mock import MockChatClient
+
+        only = set(_split_list(self._opt("only"))) or None
+        if only:
+            known = set(AREAS) | {case_id for case_id, _, _ in list_cases()}
+            unknown = sorted(only - known)
+            if unknown:
+                raise _usage(f'Unknown --only value "{unknown[0]}". Areas: {", ".join(AREAS)}.')
+
+        if self._injected is not None:
+            runtime = self._injected.runtime
+        elif self._opt("mock", False):
+            runtime = create_runtime(chat_client=MockChatClient(delay=0))
+        else:
+            runtime = create_runtime(model=self._opt("model") or None)
+            try:
+                runtime.client()  # fail now, once, rather than in every case
+            except OvertoneError as exc:
+                raise OvertoneError(
+                    f"{exc} To run the suite offline against the stand-in model, use: overtone eval --mock",
+                    status=exc.status,
+                    code=exc.code,
+                ) from None
+
+        mock = runtime.provider == "mock"
+        self.stderr(f"Evaluating {runtime.model}{' (mock model, quality checks skipped)' if mock else ''}\n")
+
+        def on_case(case: Any) -> None:
+            self.stderr(f"  {case.status.upper():<4}  {case.id}  ({case.seconds:.1f}s)\n")
+
+        report = await run_evals(runtime, only=only, on_case=on_case)
+        if not report.cases:
+            raise _usage("No evaluation cases matched --only.")
+        report_path: str | None = None
+        if self._opt("report"):
+            report_path = os.path.abspath(self._opt("report"))
+            _write_text(report_path, report.to_markdown())
+
+        def prose() -> None:
+            self.print(
+                f"{'PASS' if report.passed else 'FAIL'}: {report.count('pass')} passed, {report.count('fail')} failed, "
+                f"{report.count('skip')} skipped ({len(report.cases)} cases, {report.seconds:.1f}s)"
+            )
+            for case in report.cases:
+                for check in case.checks:
+                    if check.status == "fail":
+                        self.print(f"  FAIL {case.id}: {check.name}{' - ' + check.detail if check.detail else ''}")
+            if report_path:
+                self.print(f"Report: {report_path}")
+
+        self.emit({**report.to_json(), "reportPath": report_path}, prose)
+        return 0 if report.passed else 1
 
 
 # ───────────────────────────── Entry point ─────────────────────────────
