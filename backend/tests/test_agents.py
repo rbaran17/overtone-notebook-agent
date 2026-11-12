@@ -413,3 +413,46 @@ def test_empty_message_falls_back_to_the_exception_name() -> None:
 def test_long_failure_detail_is_truncated() -> None:
     mapped = to_overtone_error(ValueError("x" * 5_000))
     assert len(mapped.message) < 600
+
+
+# ───────────────── Structured-output schemas as Claude receives them ─────────────────
+
+from overtone.agents import GuideOut, ScriptOut  # noqa: E402
+
+
+def _open_objects(node: Any, path: str = "$") -> list[str]:
+    """Paths of every object schema that does not set `additionalProperties: false`."""
+    found: list[str] = []
+    if isinstance(node, dict):
+        if node.get("type") == "object" and node.get("additionalProperties") is not False:
+            found.append(path)
+        for key, value in node.items():
+            found += _open_objects(value, f"{path}.{key}")
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            found += _open_objects(value, f"{path}[{index}]")
+    return found
+
+
+@pytest.mark.parametrize("schema", [ScriptOut, GuideOut])
+def test_every_object_in_the_request_schema_is_closed(schema: Any) -> None:
+    """Claude rejects structured-output schemas with an open object anywhere, including nested ones.
+
+    Built with Agent Framework's own Anthropic client, so this is the payload that goes on the wire.
+    """
+    from agent_framework_anthropic import AnthropicClient
+
+    payload = AnthropicClient(model="claude-opus-5-5", api_key="test-key")._prepare_response_format(schema)
+    assert payload["type"] == "json_schema"
+    assert _open_objects(payload["schema"]) == []
+
+
+def test_script_schema_has_a_nested_object_so_the_check_above_means_something() -> None:
+    assert "ScriptTurnOut" in ScriptOut.model_json_schema()["$defs"]
+
+
+def test_schemas_still_tolerate_extra_keys_from_other_providers() -> None:
+    script = ScriptOut.model_validate(
+        {"title": "T", "summary": "S", "notes": "ignored", "turns": [{"speaker": "host_1", "text": "Hi", "mood": "x"}]}
+    )
+    assert script.turns[0].text == "Hi"

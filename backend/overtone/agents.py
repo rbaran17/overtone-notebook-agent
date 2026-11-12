@@ -21,7 +21,7 @@ from typing import Any, Literal
 
 from agent_framework import Agent, Message
 from agent_framework import exceptions as af_exceptions
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from .errors import OvertoneError
 from .grounding import CitationStream, SourceDoc, render_sources, split_passages, strip_markers, usable_docs
@@ -53,12 +53,24 @@ _BUDGET: dict[str, tuple[int, str]] = {
 # ───────────────────────── Structured output schemas ─────────────────────────
 
 
-class ScriptTurnOut(BaseModel):
+class _Out(BaseModel):
+    """Base for structured-output schemas.
+
+    Claude's structured outputs reject a schema unless every object in it, nested ones included,
+    sets `additionalProperties: false`. Agent Framework's Anthropic client adds that to the top
+    level only, so each model declares it. Validation stays lenient: a provider that returns an
+    extra key is not an error.
+    """
+
+    model_config = ConfigDict(json_schema_extra={"additionalProperties": False})
+
+
+class ScriptTurnOut(_Out):
     speaker: Literal["host_1", "host_2"]
     text: str
 
 
-class ScriptOut(BaseModel):
+class ScriptOut(_Out):
     """Episode script. `title` under 70 characters; `summary` one or two sentences; `turns` in speaking order,
     each a host's plain spoken prose with no markup or stage directions."""
 
@@ -67,7 +79,7 @@ class ScriptOut(BaseModel):
     turns: list[ScriptTurnOut]
 
 
-class GuideOut(BaseModel):
+class GuideOut(_Out):
     summary: str
     questions: list[str]
 

@@ -6,7 +6,7 @@ How Overtone is checked, what the latest run showed, and what has not been measu
 
 | Layer | What it covers | Latest result |
 | --- | --- | --- |
-| Backend unit and integration tests | Storage, ingestion, grounding, agents, workflows, engine, REST API, CLI, live voice, the evaluation suite itself | 463 passed |
+| Backend unit and integration tests | Storage, ingestion, grounding, agents, workflows, engine, REST API, CLI, live voice, the evaluation suite itself | 467 passed |
 | TypeScript client tests | REST client, `LiveVoiceSession` against a fake WebRTC stack | 32 passed |
 | Static checks | ESLint, `tsc --noEmit`, production build of the web UI | clean |
 | Evaluation suite, stand-in model | 23 end-to-end cases, 135 structural checks | 135 passed, 0 failed |
