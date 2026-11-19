@@ -2,7 +2,8 @@
 
 import { FileText, FileUp, X } from "lucide-react";
 import { useId, useRef, useState, type DragEvent, type FormEvent } from "react";
-import { api, type Source } from "@/lib/api";
+import { api } from "@/lib/api";
+import { formatBytes, MAX_UPLOAD_LABEL, splitBySize, uploadFailuresOf, type UploadFailure } from "@/lib/upload";
 import {
   Button,
   cn,
@@ -27,11 +28,6 @@ export interface AddSourceDialogProps {
 
 type Mode = "upload" | "url" | "text";
 
-interface Failure {
-  name: string;
-  error: string;
-}
-
 const MODE_OPTIONS: SegmentedOption<Mode>[] = [
   { value: "upload", label: "Upload" },
   { value: "url", label: "Website" },
@@ -48,12 +44,6 @@ function isAcceptedFile(file: File): boolean {
 
 function fileKey(file: File): string {
   return `${file.name}:${file.size}:${file.lastModified}`;
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 /** Splits pasted lines into normalised http(s) URLs (https:// is assumed when no scheme is given). */
@@ -79,11 +69,6 @@ function parseUrls(text: string): { urls: string[]; invalid: string[] } {
   return { urls: Array.from(urls), invalid };
 }
 
-/** `addFiles` attaches per-file failures as a non-enumerable `errors` array. */
-function uploadFailuresOf(result: Source[]): Failure[] {
-  return (result as unknown as { errors?: Failure[] }).errors ?? [];
-}
-
 export function AddSourceDialog({ notebookId, open, onClose, onAdded }: AddSourceDialogProps) {
   const formId = useId();
   const hintId = useId();
@@ -97,8 +82,9 @@ export function AddSourceDialog({ notebookId, open, onClose, onAdded }: AddSourc
   const [pasteText, setPasteText] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [failures, setFailures] = useState<Failure[]>([]);
+  const [failures, setFailures] = useState<UploadFailure[]>([]);
   const [skipped, setSkipped] = useState<string[]>([]);
+  const [oversized, setOversized] = useState<UploadFailure[]>([]);
   const [wasOpen, setWasOpen] = useState(open);
 
   // Reset whenever the dialog is reopened. State is adjusted during render (the
@@ -116,6 +102,7 @@ export function AddSourceDialog({ notebookId, open, onClose, onAdded }: AddSourc
       setError(null);
       setFailures([]);
       setSkipped([]);
+      setOversized([]);
     }
   }
 
@@ -146,11 +133,13 @@ export function AddSourceDialog({ notebookId, open, onClose, onAdded }: AddSourc
 
   function addFiles(list: FileList | File[]) {
     const incoming = Array.from(list);
-    const accepted = incoming.filter(isAcceptedFile);
+    // Oversized files are turned away here, with the reason, instead of failing after a long upload.
+    const { sendable, tooLarge } = splitBySize(incoming.filter(isAcceptedFile));
     setSkipped(incoming.filter((f) => !isAcceptedFile(f)).map((f) => f.name));
+    setOversized(tooLarge);
     setFiles((prev) => {
       const seen = new Set(prev.map(fileKey));
-      return [...prev, ...accepted.filter((f) => !seen.has(fileKey(f)))];
+      return [...prev, ...sendable.filter((f) => !seen.has(fileKey(f)))];
     });
     setError(null);
   }
@@ -173,7 +162,7 @@ export function AddSourceDialog({ notebookId, open, onClose, onAdded }: AddSourc
     setFailures([]);
     try {
       if (mode === "upload") {
-        // One call for the whole batch; it throws only when every file failed.
+        // One request per file; it throws only when every file failed.
         const result = await api.sources.addFiles(notebookId, files);
         const failed = uploadFailuresOf(result);
         await onAdded();
@@ -185,7 +174,7 @@ export function AddSourceDialog({ notebookId, open, onClose, onAdded }: AddSourc
         }
       } else if (mode === "url") {
         const added: string[] = [];
-        const failedUrls: Failure[] = [];
+        const failedUrls: UploadFailure[] = [];
         for (const url of urls) {
           try {
             await api.sources.add(notebookId, { type: "url", url });
@@ -281,7 +270,7 @@ export function AddSourceDialog({ notebookId, open, onClose, onAdded }: AddSourc
                 </span>
                 <span className="text-sm font-medium text-ink">Drop files here, or browse</span>
                 <span id={hintId} className="text-xs text-ink-3">
-                  PDF, Word, text, Markdown, HTML, CSV or JSON
+                  PDF, Word, text, Markdown, HTML, CSV or JSON, up to {MAX_UPLOAD_LABEL} each
                 </span>
               </span>
             </button>
@@ -300,6 +289,21 @@ export function AddSourceDialog({ notebookId, open, onClose, onAdded }: AddSourc
             {skipped.length > 0 && (
               <Notice tone="info" onDismiss={() => setSkipped([])}>
                 Skipped unsupported files: {skipped.join(", ")}
+              </Notice>
+            )}
+
+            {oversized.length > 0 && (
+              <Notice onDismiss={() => setOversized([])}>
+                <p className="font-medium">
+                  {oversized.length === 1 ? "One file is too large to add." : `${oversized.length} files are too large to add.`}
+                </p>
+                <ul className="mt-1.5 space-y-1">
+                  {oversized.map((f, i) => (
+                    <li key={`${f.name}-${i}`} className="break-words">
+                      <span className="font-medium">{f.name}</span>: {f.error}
+                    </li>
+                  ))}
+                </ul>
               </Notice>
             )}
 

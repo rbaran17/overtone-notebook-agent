@@ -251,7 +251,11 @@ export interface OvertoneClient {
     list(notebookId: ID): Promise<Source[]>;
     /** File bytes are uploaded as multipart. */
     add(notebookId: ID, input: SourceInput): Promise<Source>;
-    /** Browser convenience: upload File objects from an <input type="file"> or a drop. */
+    /**
+     * Browser convenience: upload File objects from an <input type="file"> or a drop.
+     * Sends one request per file, in order. Files that failed are listed on the result's
+     * non-enumerable `errors` ({ name, error, code }); it throws only when no file was added.
+     */
     addFiles(notebookId: ID, files: File[]): Promise<Source[]>;
     get(id: ID): Promise<Source>;
     getText(id: ID): Promise<string>;

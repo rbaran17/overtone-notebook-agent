@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { useRef, useState, type DragEvent, type ReactNode } from "react";
 import { api, type Source } from "@/lib/api";
+import { splitBySize, uploadFailuresOf, type UploadFailure } from "@/lib/upload";
 import { AddSourceDialog } from "./AddSourceDialog";
 import { Button, cn, EmptyState, errorMessage, IconButton, Modal, Notice, PanelFrame, Spinner } from "./ui";
 
@@ -30,11 +31,6 @@ export interface SourcesPanelProps {
   /** Open the source viewer (owned by the page). */
   onOpenSource: (sourceId: string) => void;
   className?: string;
-}
-
-interface Failure {
-  name: string;
-  error: string;
 }
 
 const EXTENSION_LABELS: Record<string, string> = {
@@ -100,11 +96,6 @@ function sourceIcon(source: Source): ReactNode {
 function metaFor(source: Source): string {
   const type = source.kind === "url" && source.origin ? hostOf(source.origin) : sourceTypeLabel(source);
   return `${type} · ${estimateWords(source.charCount)}`;
-}
-
-/** `addFiles` attaches per-file failures as a non-enumerable `errors` array. */
-function uploadFailuresOf(result: Source[]): Failure[] {
-  return (result as unknown as { errors?: Failure[] }).errors ?? [];
 }
 
 function isFileDrag(e: DragEvent): boolean {
@@ -174,7 +165,7 @@ export function SourcesPanel({
   const [dragging, setDragging] = useState(false);
   const dragDepth = useRef(0);
   const [uploading, setUploading] = useState<number | null>(null);
-  const [failures, setFailures] = useState<Failure[]>([]);
+  const [failures, setFailures] = useState<UploadFailure[]>([]);
   const [pendingDelete, setPendingDelete] = useState<Source | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -196,15 +187,18 @@ export function SourcesPanel({
 
   async function uploadFiles(list: File[]) {
     if (list.length === 0 || uploading !== null) return;
-    setUploading(list.length);
-    setFailures([]);
+    // Oversized files are reported at once; the rest still upload.
+    const { sendable, tooLarge } = splitBySize(list);
+    setFailures(tooLarge);
+    if (sendable.length === 0) return;
+    setUploading(sendable.length);
     try {
-      const result = await api.sources.addFiles(notebookId, list);
-      setFailures(uploadFailuresOf(result));
+      const result = await api.sources.addFiles(notebookId, sendable);
+      setFailures([...tooLarge, ...uploadFailuresOf(result)]);
       await onSourcesChanged();
     } catch (err) {
-      const name = list.length === 1 ? list[0].name : `${list.length} files`;
-      setFailures([{ name, error: errorMessage(err) }]);
+      const name = sendable.length === 1 ? sendable[0].name : `${sendable.length} files`;
+      setFailures([...tooLarge, { name, error: errorMessage(err) }]);
     } finally {
       setUploading(null);
     }
