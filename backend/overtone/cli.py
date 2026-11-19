@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import ipaddress
 import json
 import os
 import re
@@ -50,7 +51,7 @@ Usage:
 
 Commands:
   info                                 Show model, TTS provider, data dir and version
-  serve                                Run the HTTP API (--port, --host, --api-key, --cors)
+  serve                                Run the HTTP API (--port, --host, --api-key, --cors, --allow-host)
   podcast <source...>                  Make an audio overview (podcast) from sources
   doc <source...>                      Make a document (summary, briefing, study_guide, faq, timeline, custom)
   ask <source...> -q "question"        Ask a question about sources; prints a cited answer
@@ -87,6 +88,7 @@ Document options (doc, generate):
 
 Other:
   serve: --port <n> --host <h> --api-key <k> (or $OVERTONE_API_KEY) --cors[=origin,...]
+         --allow-host <name,...> (without a key the API answers only to localhost and IP addresses)
   ask:   -q, --question "..."
   eval:  --mock (offline stand-in model)  --report <file.md>  --only <area|case,...>
 
@@ -215,8 +217,34 @@ def _check_enum(value: str | None, allowed: Sequence[str], flag: str) -> str | N
     return value
 
 
+def _is_loopback(host: str) -> bool:
+    """True when a listen address is only reachable from this machine."""
+    name = host.strip().strip("[]").lower()
+    if name == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(name).is_loopback
+    except ValueError:
+        return False
+
+
 def _split_list(value: str | None) -> list[str]:
     return [part.strip() for part in (value or "").split(",") if part.strip()]
+
+
+def _unused_path(stem: str, extension: str) -> str:
+    """`stem.ext` in the current folder, or `stem-2.ext`, `stem-3.ext`… when that name is taken.
+
+    The stem comes from a title the model wrote, which a source document can steer: without this
+    a podcast "called" requirements or notes would overwrite the requirements.txt or notes.txt
+    already there. A path given with --out or --script-out is the user's choice and is used as is.
+    """
+    candidate = f"{stem}{extension}"
+    number = 2
+    while os.path.lexists(candidate):
+        candidate = f"{stem}-{number}{extension}"
+        number += 1
+    return os.path.abspath(candidate)
 
 
 def _write_text(path: str, text: str) -> None:
@@ -318,6 +346,7 @@ def _add_global_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--host", metavar="HOST", default=s)
     parser.add_argument("--api-key", dest="api_key", metavar="KEY", default=s)
     parser.add_argument("--cors", nargs="?", const="*", metavar="ORIGINS", default=s)
+    parser.add_argument("--allow-host", dest="allow_host", metavar="NAMES", default=s)
     parser.add_argument("--mock", action="store_true", default=s)
     parser.add_argument("--report", metavar="PATH", default=s)
     parser.add_argument("--only", metavar="NAMES", default=s)
@@ -485,7 +514,8 @@ class _Runner:
         slug = slugify(artifact.title or "overtone")
         audio_path: str | None = None
         if audio is not None:
-            audio_path = os.path.abspath(self._opt("out") or f"{slug}.mp3")
+            out = self._opt("out")
+            audio_path = os.path.abspath(out) if out else _unused_path(slug, ".mp3")
             _write_bytes(audio_path, audio[0])
         elif artifact.audio_error:
             self.stderr(f"No audio rendered: {artifact.audio_error}\n")
@@ -498,7 +528,7 @@ class _Runner:
         script_path: str | None = None
         script_out = self._opt("script_out")
         if script_out or audio is None:
-            script_path = os.path.abspath(script_out or f"{slug}.txt")
+            script_path = os.path.abspath(script_out) if script_out else _unused_path(slug, ".txt")
             if script_path.lower().endswith(".json"):
                 content = _dumps(artifact.script) + "\n"
             else:
@@ -595,14 +625,30 @@ class _Runner:
         raw_cors = self._opt("cors")
         if raw_cors is not None:
             cors = True if raw_cors.strip() == "*" else _split_list(raw_cors)
+        if cors is True and not api_key:
+            raise _usage(
+                "--cors for every origin needs an API key: without one, any website you visit could read and "
+                "change your notebooks. Add --api-key (or OVERTONE_API_KEY), or name the origins: "
+                "--cors http://localhost:3000"
+            )
+        allowed_hosts = _split_list(self._opt("allow_host"))
 
         try:
             from overtone.api import create_app
         except ImportError as exc:
             raise OvertoneError(f"The HTTP API is not available: {exc}", status=500, code="unavailable") from exc
 
-        app = create_app(engine, api_key=api_key, cors=cors)
+        # "" (not None) when there is no key: create_app would otherwise read OVERTONE_API_KEY itself.
+        options: dict[str, Any] = {"api_key": api_key or "", "cors": cors}
+        if allowed_hosts:
+            options["allowed_hosts"] = allowed_hosts
+        app = create_app(engine, **options)
         self.stderr(f"Overtone API listening on http://{host}:{port}{' (bearer token required)' if api_key else ''}\n")
+        if not api_key and not _is_loopback(host):
+            self.stderr(
+                f"Warning: listening on {host} without an API key. Anyone who can reach this address can read, "
+                "change and delete every notebook, and spend your model credit. Set OVERTONE_API_KEY.\n"
+            )
         await _run_server(app, host=host, port=port)
         self.stderr("Shutting down.\n")
         return 0

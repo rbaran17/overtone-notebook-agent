@@ -15,6 +15,10 @@ import itertools
 import os
 import re
 import socket
+import urllib.request
+import zipfile
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Literal
 from urllib.parse import SplitResult, unquote, urljoin, urlsplit, urlunsplit
@@ -32,6 +36,9 @@ from .models import ExtractedSource, FileInput, SourceInput, TextInput, UrlInput
 MAX_BYTES = 25 * 1024 * 1024
 FETCH_TIMEOUT_S = 20.0
 MAX_REDIRECTS = 5
+# A .docx is a zip: a few hundred kilobytes can unpack to gigabytes. Refuse before unpacking.
+MAX_DOCX_XML_BYTES = 64 * 1024 * 1024
+MAX_DOCX_PARTS = 5000
 USER_AGENT = "Mozilla/5.0 (compatible; OvertoneBot/0.1)"
 ACCEPT = "text/html,application/pdf,text/plain,*/*"
 REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
@@ -118,6 +125,20 @@ _CHARSET_ALIASES: dict[str, str] = {
     "l1": "cp1252",
     "windows-1252": "cp1252",
 }
+
+
+# Text encodings a page or file may declare. Anything else falls back to UTF-8: Python also knows codecs
+# that are not text encodings ("zlib") or whose decoder is quadratic in the input ("punycode").
+_TEXT_CODECS = frozenset(
+    codecs.lookup(name).name
+    for name in (
+        "utf-8 utf-8-sig utf-16 utf-16-le utf-16-be utf-32 utf-32-le utf-32-be ascii latin-1 "
+        "cp1250 cp1251 cp1252 cp1253 cp1254 cp1255 cp1256 cp1257 cp1258 cp437 cp850 cp866 cp874 "
+        "iso8859-2 iso8859-3 iso8859-4 iso8859-5 iso8859-6 iso8859-7 iso8859-8 iso8859-9 iso8859-10 "
+        "iso8859-13 iso8859-14 iso8859-15 iso8859-16 koi8-r koi8-u mac-roman mac-cyrillic tis-620 "
+        "gbk gb2312 gb18030 big5 big5hkscs euc-jp shift_jis cp932 iso2022-jp euc-kr cp949"
+    ).split()
+)
 
 
 def _basename(name: str) -> str:
@@ -237,6 +258,7 @@ def _docx_to_text(data: bytes) -> str:
     Cells are joined with " | " rather than tabs: normalize_text collapses tabs inside a line,
     which would make adjacent cells indistinguishable.
     """
+    _assert_docx_unpacks_small(data)
     try:
         document = docx.Document(io.BytesIO(data))
         lines: list[str] = []
@@ -251,6 +273,26 @@ def _docx_to_text(data: bytes) -> str:
         raise _unreadable("Word document", exc) from exc
 
 
+def _assert_docx_unpacks_small(data: bytes) -> None:
+    """Refuse a document whose zip members would unpack to far more than was uploaded.
+
+    python-docx inflates every part and builds a tree for the XML ones, so the cost is set by the
+    unpacked size, not the upload. The sizes come from the zip directory; the zip reader stops at
+    the declared size, so a member cannot unpack to more than it declares.
+    """
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            members = archive.infolist()
+    except (zipfile.BadZipFile, ValueError, OSError):
+        return  # not a zip at all: python-docx reports that as an unreadable document
+    total = sum(m.file_size for m in members)
+    xml = sum(m.file_size for m in members if m.filename.lower().endswith((".xml", ".rels")))
+    if len(members) > MAX_DOCX_PARTS or xml > MAX_DOCX_XML_BYTES or total > max(4 * MAX_BYTES, 2 * len(data)):
+        raise OvertoneError(
+            "That Word document is too large when unpacked.", status=413, code="too_large"
+        )
+
+
 def _decode_text(data: bytes, charset: str | None) -> str:
     """Decode with the declared charset (UTF-8 if missing or unknown). A leading BOM is dropped."""
     encoding = "utf-8"
@@ -258,8 +300,8 @@ def _decode_text(data: bytes, charset: str | None) -> str:
         label = charset.strip().lower()
         label = _CHARSET_ALIASES.get(label, label)
         try:
-            codecs.lookup(label)
-            encoding = label
+            if codecs.lookup(label).name in _TEXT_CODECS:
+                encoding = label
         except LookupError:
             pass
     text = data.decode(encoding, errors="replace")
@@ -300,9 +342,14 @@ async def _from_bytes(
     if fmt == "docx":
         return _Extracted("docx", await asyncio.to_thread(_docx_to_text, data), DOCX_MIME)
     if fmt == "html":
-        html = _decode_text(data, charset)
-        return _Extracted("html", html_to_text(html), "text/html", html_title(html), html_og_title(html))
-    return _Extracted("text", _decode_text(data, charset), _text_mime_type(name, mime_type))
+        return await asyncio.to_thread(_html_extracted, data, charset)
+    return _Extracted("text", await asyncio.to_thread(_decode_text, data, charset), _text_mime_type(name, mime_type))
+
+
+def _html_extracted(data: bytes, charset: str | None) -> _Extracted:
+    """Decode and convert an HTML document. CPU-bound: run in a thread."""
+    html = _decode_text(data, charset)
+    return _Extracted("html", html_to_text(html), "text/html", html_title(html), html_og_title(html))
 
 
 # ─────────────────────────────── HTML ────────────────────────────────
@@ -310,7 +357,6 @@ async def _from_bytes(
 _NAMED_OR_NUMERIC_ENTITY = re.compile(r"&(#[xX][0-9a-fA-F]+|#[0-9]+|[a-zA-Z][a-zA-Z0-9]*);")
 _COMMENT_RE = re.compile(r"<!--[\s\S]*?(?:-->|\Z)")
 _TAG_RE = re.compile(r"<[^>]*>")
-_TITLE_RE = re.compile(r"<title\b[^>]*>([\s\S]*?)</title\s*>", re.IGNORECASE)
 _META_RE = re.compile(r"<meta\b[^>]*>", re.IGNORECASE)
 _OG_TITLE_ATTR_RE = re.compile(r"(?:property|name)\s*=\s*[\"']og:title[\"']", re.IGNORECASE)
 _CONTENT_ATTR_RE = re.compile(r"content\s*=\s*(?:\"([^\"]*)\"|'([^']*)')", re.IGNORECASE)
@@ -349,28 +395,81 @@ def _strip_comments(html: str) -> str:
     return _COMMENT_RE.sub(" ", html)
 
 
+# Every tag pattern here has the shape "<name[^>]*>". Run over text with many "<name" and no ">" after
+# them ("<a<a<a..."), each one scans to the end of the document before failing: quadratic time, tens of
+# seconds for a 200 KB page, with the server frozen meanwhile. No tag can start after the last ">", so
+# the helpers below never let a pattern look past it; before it, every "<name" finds its ">".
+
+
+def _tag_end(html: str) -> int:
+    """Index just past the last ">": the end of the part of the document that can contain tags."""
+    return html.rfind(">") + 1
+
+
+def _sub_tags(pattern: re.Pattern[str], replacement: str, text: str) -> str:
+    """`pattern.sub` for a tag pattern, in time linear in the text."""
+    cut = _tag_end(text)
+    return pattern.sub(replacement, text[:cut]) + text[cut:]
+
+
+_ELEMENT_RES: dict[str, tuple[re.Pattern[str], re.Pattern[str]]] = {}
+
+
+def _elements(html: str, tag: str) -> Iterator[tuple[int, int, int, int]]:
+    """(start, inner start, inner end, end) of each `tag` element, left to right, without overlaps.
+
+    An element ends at its first closing tag; one that is never closed runs to the end of the
+    document (inner end == end). Linear in the size of the document.
+    """
+    patterns = _ELEMENT_RES.get(tag)
+    if patterns is None:
+        patterns = _ELEMENT_RES[tag] = (
+            re.compile(rf"<{tag}\b[^>]*>", re.IGNORECASE),
+            re.compile(rf"</{tag}\s*>", re.IGNORECASE),
+        )
+    open_re, close_re = patterns
+    limit = _tag_end(html)
+    pos = 0
+    while pos < limit:
+        opened = open_re.search(html, pos, limit)
+        if opened is None:
+            return
+        closed = close_re.search(html, opened.end(), limit)
+        if closed is None:
+            yield opened.start(), opened.end(), len(html), len(html)
+            return
+        yield opened.start(), opened.end(), closed.start(), closed.end()
+        pos = closed.end()
+
+
 def _remove_elements(html: str, tags: tuple[str, ...]) -> str:
     """Remove whole elements (open tag, content, close tag; unclosed runs to the end)."""
     out = html
     for tag in tags:
-        out = re.sub(rf"<{tag}\b[^>]*>[\s\S]*?(?:</{tag}\s*>|\Z)", " ", out, flags=re.IGNORECASE)
+        kept: list[str] = []
+        last = 0
+        for start, _, _, end in _elements(out, tag):
+            kept += (out[last:start], " ")
+            last = end
+        if last:
+            kept.append(out[last:])
+            out = "".join(kept)
     return out
 
 
 def _inner_of_all(html: str, tag: str) -> list[str]:
     """Inner HTML of every element with this tag name."""
-    pattern = rf"<{tag}\b[^>]*>([\s\S]*?)(?:</{tag}\s*>|\Z)"
-    return [m.group(1) for m in re.finditer(pattern, html, flags=re.IGNORECASE)]
+    return [html[inner_start:inner_end] for _, inner_start, inner_end, _ in _elements(html, tag)]
 
 
 def _fragment_to_text(fragment: str) -> str:
     """Body text of an HTML fragment that has already been scoped and stripped of chrome."""
     s = _WS_RE.sub(" ", fragment)  # HTML source whitespace is not meaningful
-    s = _BR_RE.sub("\n", s)
-    s = _LI_RE.sub("\n- ", s)
-    s = _BLOCK_RE.sub("\n", s)
-    s = _DECL_RE.sub("", s)
-    s = _TAG_ANY_RE.sub("", s)
+    s = _sub_tags(_BR_RE, "\n", s)
+    s = _sub_tags(_LI_RE, "\n- ", s)
+    s = _sub_tags(_BLOCK_RE, "\n", s)
+    s = _sub_tags(_DECL_RE, "", s)
+    s = _sub_tags(_TAG_ANY_RE, "", s)
     s = decode_entities(s)
     lines = [line.strip() for line in s.split("\n")]
     return normalize_text("\n".join(lines))
@@ -395,15 +494,17 @@ def html_to_text(html: str) -> str:
 
 def html_title(html: str) -> str | None:
     """The document's <title>, entity-decoded, or None."""
-    m = _TITLE_RE.search(_strip_comments(html))
-    if not m:
-        return None
-    return _collapse(decode_entities(_TAG_RE.sub("", m.group(1)))) or None
+    doc = _strip_comments(html)
+    for _, inner_start, inner_end, end in _elements(doc, "title"):
+        if end == inner_end:
+            return None  # never closed: not a title
+        return _collapse(decode_entities(_sub_tags(_TAG_RE, "", doc[inner_start:inner_end]))) or None
+    return None
 
 
 def html_og_title(html: str) -> str | None:
     """The og:title meta content, or None."""
-    for tag in _META_RE.findall(html):
+    for tag in _META_RE.findall(html, 0, _tag_end(html)):
         if not _OG_TITLE_ATTR_RE.search(tag):
             continue
         c = _CONTENT_ATTR_RE.search(tag)
@@ -464,7 +565,9 @@ _NAT64_PREFIX = bytes.fromhex("0064ff9b") + bytes(8)  # 64:ff9b::/96
 
 
 def _is_blocked_address(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    """True for loopback, private, link-local, unspecified and reserved addresses.
+    """True for every address that is not on the public internet: loopback, private, link-local,
+    carrier-grade NAT (100.64.0.0/10, where some clouds put their metadata service and VPNs their
+    peers), site-local, multicast, unspecified and reserved addresses.
 
     IPv4-mapped, IPv4-compatible and NAT64 IPv6 addresses are judged by the IPv4 address they embed.
     """
@@ -474,7 +577,16 @@ def _is_blocked_address(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bo
         prefix = ip.packed[:12]
         if prefix == bytes(12) or prefix == _NAT64_PREFIX:
             return _is_blocked_address(ipaddress.IPv4Address(ip.packed[12:]))
-    return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_unspecified or ip.is_reserved
+    return (
+        not ip.is_global
+        or ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_unspecified
+        or ip.is_reserved
+        or (isinstance(ip, ipaddress.IPv6Address) and ip.is_site_local)
+    )
 
 
 def _parse_literal_ip(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
@@ -517,15 +629,32 @@ def _too_large() -> OvertoneError:
     return OvertoneError(f"That file is larger than {MAX_BYTES // (1024 * 1024)} MB", status=413, code="too_large")
 
 
-async def _assert_fetchable(raw: str) -> None:
-    """Scheme and SSRF checks for one hop (every redirect target is checked again)."""
+def _uses_proxy(parts: SplitResult) -> bool:
+    """True when the environment sends this URL through a proxy (HTTP(S)_PROXY, minus NO_PROXY)."""
+    proxies = urllib.request.getproxies()
+    if not (proxies.get(parts.scheme) or proxies.get("all")):
+        return False
+    try:
+        return not urllib.request.proxy_bypass(parts.hostname or "")
+    except Exception:
+        return True
+
+
+async def _assert_fetchable(raw: str) -> list[str]:
+    """Scheme and SSRF checks for one hop (every redirect target is checked again).
+
+    Returns the addresses the connection may be made to, all of them checked. The caller must
+    connect to one of these and not look the name up again: DNS may answer differently the second
+    time (a public address for the check, 127.0.0.1 for the connection). An empty list means
+    "connect by name": private URLs are allowed, or a proxy does the lookup, so pinning cannot apply.
+    """
     parts = _parse_url(raw)
     if parts.scheme not in ("http", "https"):
         raise OvertoneError(
             f"Only http and https URLs can be added (got {parts.scheme}:)", status=400, code="bad_url"
         )
     if os.environ.get("OVERTONE_ALLOW_PRIVATE_URLS") == "1":
-        return
+        return []
 
     host = (parts.hostname or "").rstrip(".")
     if not host:
@@ -541,7 +670,7 @@ async def _assert_fetchable(raw: str) -> None:
     if literal is not None:
         if _is_blocked_address(literal):
             raise blocked()
-        return
+        return [] if _uses_proxy(parts) else [str(literal)]
 
     # A public-looking name may still resolve to a private address: check every answer.
     port = parts.port or (443 if parts.scheme == "https" else 80)
@@ -549,6 +678,7 @@ async def _assert_fetchable(raw: str) -> None:
         addresses = await _resolve_host(host, port)
     except OSError as exc:
         raise _fetch_failed(f"Could not resolve {host}: {exc.strerror or exc}") from exc
+    checked: list[str] = []
     for address in addresses:
         try:
             ip = ipaddress.ip_address(address.split("%", 1)[0])
@@ -556,6 +686,42 @@ async def _assert_fetchable(raw: str) -> None:
             raise blocked() from None  # fail closed on anything unparseable
         if _is_blocked_address(ip):
             raise blocked()
+        if str(ip) not in checked:
+            checked.append(str(ip))
+    if not checked:
+        raise _fetch_failed(f"Could not resolve {host}: no addresses")
+    return [] if _uses_proxy(parts) else checked
+
+
+_MAX_PINNED_ATTEMPTS = 3
+
+
+@asynccontextmanager
+async def _open_pinned(client: httpx.AsyncClient, url: str, addresses: list[str]) -> AsyncIterator[httpx.Response]:
+    """GET `url`, connecting to one of `addresses` instead of resolving the host name again.
+
+    The request is built for the real URL, so the Host header, TLS server name and certificate
+    check all still use the name; only the socket goes to the checked address. The next address
+    is tried when one cannot be connected to.
+    """
+    targets: list[str | None] = [*addresses[:_MAX_PINNED_ATTEMPTS]] if addresses else [None]
+    response: httpx.Response | None = None
+    for attempt, address in enumerate(targets):
+        request = client.build_request("GET", url)
+        if address is not None:
+            request.extensions = {**request.extensions, "sni_hostname": request.url.raw_host.decode("ascii")}
+            request.url = request.url.copy_with(host=address)
+        try:
+            response = await client.send(request, stream=True)
+            break
+        except (httpx.ConnectError, httpx.ConnectTimeout):
+            if attempt == len(targets) - 1:
+                raise
+    assert response is not None
+    try:
+        yield response
+    finally:
+        await response.aclose()
 
 
 @dataclass
@@ -596,9 +762,9 @@ async def _fetch_guarded(start: str) -> _Fetched:
         headers={"User-Agent": USER_AGENT, "Accept": ACCEPT},
     ) as client:
         for hop in itertools.count():
-            await _assert_fetchable(current)
+            addresses = await _assert_fetchable(current)
             try:
-                async with client.stream("GET", current) as res:
+                async with _open_pinned(client, current, addresses) as res:
                     if res.status_code in REDIRECT_STATUSES:
                         location = res.headers.get("location")
                         if not location:
@@ -679,7 +845,7 @@ async def _extract_file(input: FileInput) -> ExtractedSource:
     return ExtractedSource(
         kind="file",
         title=title,
-        text=normalize_text(extracted.text),
+        text=await asyncio.to_thread(normalize_text, extracted.text),
         origin=filename,
         mime_type=extracted.mime_type,
     )
@@ -704,7 +870,7 @@ async def _extract_url(input: UrlInput) -> ExtractedSource:
     return ExtractedSource(
         kind="url",
         title=title,
-        text=normalize_text(extracted.text),
+        text=await asyncio.to_thread(normalize_text, extracted.text),
         origin=urlunsplit(parts),
         mime_type=extracted.mime_type,
     )

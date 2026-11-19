@@ -21,7 +21,7 @@ from typing import Any
 
 from . import __version__
 from .agents import ModelRuntime, create_runtime, stream_answer, voice_answer, write_guide
-from .errors import OvertoneError
+from .errors import OvertoneError, public_message
 from .grounding import SourceDoc
 from .ingest import extract_source
 from .live import LIVE_VOICES, LiveVoice, create_live_voice
@@ -402,9 +402,11 @@ class _Chat:
                     await e.storage.delete(MESSAGES, question.id)
                 except Exception:
                     pass
-            event: dict[str, Any] = {"type": "error", "error": str(exc) or type(exc).__name__}
+            event: dict[str, Any] = {"type": "error", "error": public_message(exc)}
             if isinstance(exc, OvertoneError):
                 event["code"], event["status"] = exc.code, exc.status
+            else:
+                e._on_error(exc, f"chat in notebook {notebook_id}")
             yield event
 
     async def send(self, notebook_id: str, message: str, *, source_ids: list[str] | None = None) -> ChatMessage:
@@ -538,7 +540,7 @@ class _Artifacts:
             if not isinstance(exc, OvertoneError):
                 e._on_error(exc, f"artifact {artifact.id}")
             artifact.status, artifact.progress = "error", None
-            artifact.error = str(exc) or type(exc).__name__
+            artifact.error = public_message(exc)
             try:
                 await self._save(artifact)
             except Exception:

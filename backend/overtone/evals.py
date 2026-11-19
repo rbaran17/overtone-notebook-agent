@@ -788,8 +788,9 @@ async def _api(ctx: _Ctx) -> None:
     from .api import create_app
 
     engine = ctx.engine()
-    transport = httpx.ASGITransport(app=create_app(engine))
-    async with httpx.AsyncClient(transport=transport, base_url="http://overtone.test", timeout=600) as http:
+    # In-process and keyless on purpose (api_key="" ignores OVERTONE_API_KEY); a keyless app answers to loopback only.
+    transport = httpx.ASGITransport(app=create_app(engine, api_key=""))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1", timeout=600) as http:
         health = await http.get("/health")
         body = health.json() if health.status_code == 200 else {}
         ctx.check("GET /health describes the engine", body.get("name") == "overtone" and body.get("model") == ctx.runtime.model, str(body)[:160])

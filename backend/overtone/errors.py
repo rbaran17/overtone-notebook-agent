@@ -14,3 +14,15 @@ class OvertoneError(Exception):
 
     def __str__(self) -> str:
         return self.message
+
+
+INTERNAL_MESSAGE = "Something went wrong on the server. The details are in its log."
+
+
+def public_message(exc: BaseException) -> str:
+    """What a client may read about a failure.
+
+    An `OvertoneError` was written for the caller. Anything else is an accident whose text can
+    name files, paths or internal addresses, so the caller gets a fixed sentence instead.
+    """
+    return exc.message if isinstance(exc, OvertoneError) else INTERNAL_MESSAGE

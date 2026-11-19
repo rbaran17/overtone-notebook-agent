@@ -17,15 +17,17 @@ created on the first request.
 from __future__ import annotations
 
 import hmac
+import ipaddress
 import json
 import logging
 import math
+import os
 import re
 import threading
 import unicodedata
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, MutableMapping
 from typing import Any, TypeVar
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlsplit
 
 from fastapi import FastAPI
 from pydantic import ValidationError
@@ -54,6 +56,12 @@ from .models import (
 log = logging.getLogger("overtone.api")
 
 DEFAULT_MAX_UPLOAD = 50 * 1024 * 1024
+# One request may carry several uploads; this caps them together (and every JSON body).
+_REQUEST_BYTES_PER_UPLOAD = 4
+# Multipart parts per request. Starlette's defaults are 1000 each, and text parts are held in memory.
+_MAX_FORM_FILES = 50
+_MAX_FORM_FIELDS = 100
+_UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 _EXPOSE_HEADERS = "Content-Range, Content-Length"
 _PREFLIGHT_HEADERS = {
     "Access-Control-Allow-Methods": "GET,POST,PATCH,DELETE,OPTIONS",
@@ -312,6 +320,134 @@ class _AuthMiddleware:
         await response(scope, receive, send)
 
 
+def _host_name(authority: str) -> str | None:
+    """The host of a `Host` header or URL authority: lower-cased, no port, no brackets. None when malformed."""
+    match = re.fullmatch(r"(?:\[([0-9a-f:.]+)\]|([a-z0-9._-]+))(?::[0-9]{1,5})?", authority.strip().lower())
+    if not match:
+        return None
+    return (match.group(1) or match.group(2)).rstrip(".") or None
+
+
+def _ip_literal(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    try:
+        return ipaddress.ip_address(host)
+    except ValueError:
+        return None
+
+
+class _LocalGuardMiddleware:
+    """Keeps web pages away from an API that has no key.
+
+    Without a key, the only thing protecting the notebooks is that the caller is the person at
+    this machine. A browser breaks that assumption in two ways, and this closes both:
+
+    - DNS rebinding: a page on `evil.example` re-points its own name at 127.0.0.1 and is then
+      same-origin with this API. The browser still sends `Host: evil.example`, so a request is
+      answered only when `Host` is `localhost`, an IP address (a rebinding page cannot have one
+      as its name) or a name in `allowed_hosts`.
+    - Cross-site requests: any page can POST here without asking (a form, or `fetch` with
+      `mode: "no-cors"`). Browsers put the page's origin on those, so a request that changes
+      something is answered only when `Origin` is absent (not a browser), this server itself,
+      a loopback origin (the bundled web UI) or an origin on the CORS list.
+    """
+
+    def __init__(
+        self, app: ASGIApp, *, allowed_hosts: list[str] | None, allowed_origins: list[str] | None
+    ) -> None:
+        self.app = app
+        # None means "any": the caller opted out of the check.
+        self.allowed_hosts = None if allowed_hosts is None else {h.strip().lower().rstrip(".") for h in allowed_hosts}
+        self.allowed_origins = None if allowed_origins is None else {o.strip().lower().rstrip("/") for o in allowed_origins}
+
+    def _host_ok(self, host_header: str | None) -> bool:
+        if self.allowed_hosts is None:
+            return True
+        host = _host_name(host_header or "")
+        if host is None:
+            return False
+        return host == "localhost" or _ip_literal(host) is not None or host in self.allowed_hosts
+
+    def _origin_ok(self, origin: str, host_header: str | None) -> bool:
+        if self.allowed_origins is None:
+            return True
+        origin = origin.strip().lower().rstrip("/")
+        if origin in self.allowed_origins:
+            return True
+        try:
+            parts = urlsplit(origin)
+        except ValueError:
+            return False
+        if parts.scheme not in ("http", "https") or not parts.netloc:
+            return False  # includes "null" (sandboxed frames, file: pages, stripped referrers)
+        if parts.netloc == (host_header or "").strip().lower():
+            return True
+        host = _host_name(parts.netloc)
+        if host is None:
+            return False
+        ip = _ip_literal(host)
+        return host == "localhost" or (ip is not None and ip.is_loopback)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = Headers(scope=scope)
+        host_header = headers.get("host")
+        if not self._host_ok(host_header):
+            response = _json_error(
+                403,
+                "This API has no API key, so it only answers requests addressed to localhost or an IP address. "
+                "Set OVERTONE_API_KEY, or allow this host name with OVERTONE_ALLOWED_HOSTS.",
+                "forbidden_host",
+            )
+            await response(scope, receive, send)
+            return
+        origin = headers.get("origin")
+        if scope["method"] in _UNSAFE_METHODS and origin is not None and not self._origin_ok(origin, host_header):
+            response = _json_error(
+                403,
+                "This API has no API key, so it does not accept requests from other websites. "
+                "Set OVERTONE_API_KEY, or allow this origin with the cors option.",
+                "forbidden_origin",
+            )
+            await response(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
+class _BodyLimitMiddleware:
+    """Refuses request bodies over `max_bytes`, by `Content-Length` when sent and by counting otherwise."""
+
+    def __init__(self, app: ASGIApp, *, max_bytes: int) -> None:
+        self.app = app
+        self.max_bytes = max_bytes
+
+    def _too_large(self) -> OvertoneError:
+        return OvertoneError(
+            f"The request is larger than the {_format_mb(self.max_bytes)} limit.", status=413, code="too_large"
+        )
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        declared = Headers(scope=scope).get("content-length", "")
+        if declared.isdigit() and int(declared) > self.max_bytes:
+            raise self._too_large()
+        seen = 0
+
+        async def counted() -> MutableMapping[str, Any]:
+            nonlocal seen
+            message = await receive()
+            if message["type"] == "http.request":
+                seen += len(message.get("body", b""))
+                if seen > self.max_bytes:
+                    raise self._too_large()
+            return message
+
+        await self.app(scope, counted, send)
+
+
 class _ErrorMiddleware:
     """Turns anything the app raises into the JSON error shape (500s carry no details)."""
 
@@ -385,15 +521,27 @@ def create_app(
     api_key: str | None = None,
     cors: bool | str | list[str] = False,
     max_upload_bytes: int = DEFAULT_MAX_UPLOAD,
+    allowed_hosts: str | list[str] | None = None,
 ) -> FastAPI:
     """Build the REST API as a FastAPI app.
 
     Args:
         engine: The engine to serve. Default: `create_engine()`, built on the first request.
         api_key: When set, every request except OPTIONS and GET /health needs `Authorization: Bearer <key>`.
+            Default: the `OVERTONE_API_KEY` environment variable. Pass "" to run without a key even when it is set.
         cors: False (off), True (any origin), or an origin or list of origins to allow.
-        max_upload_bytes: Largest accepted upload per file.
+        max_upload_bytes: Largest accepted upload per file. A whole request may be four times this.
+        allowed_hosts: Only used without an API key. Extra host names (beyond `localhost` and IP addresses)
+            the API answers to, for example the name a reverse proxy forwards. "*" answers to any name.
+            Default: the comma-separated `OVERTONE_ALLOWED_HOSTS` environment variable.
     """
+    if api_key is None:
+        api_key = os.environ.get("OVERTONE_API_KEY")
+    api_key = api_key or None
+    if allowed_hosts is None:
+        allowed_hosts = [h.strip() for h in os.environ.get("OVERTONE_ALLOWED_HOSTS", "").split(",") if h.strip()]
+    elif isinstance(allowed_hosts, str):
+        allowed_hosts = [allowed_hosts]
     app = FastAPI(title="Overtone API", version=__version__, docs_url="/docs", openapi_url="/openapi.json")
     app.state.engine = engine
     engine_lock = threading.Lock()
@@ -418,7 +566,13 @@ def create_app(
             try:
                 # Starlette caps text fields at 1 MB by default. Pasted text has no limit in the TypeScript
                 # handler, so use a generous guard that is independent of the per-file upload limit.
-                form = await request.form(max_part_size=max(DEFAULT_MAX_UPLOAD, max_upload_bytes))
+                form = await request.form(
+                    max_files=_MAX_FORM_FILES,
+                    max_fields=_MAX_FORM_FIELDS,
+                    max_part_size=max(DEFAULT_MAX_UPLOAD, max_upload_bytes),
+                )
+            except OvertoneError:
+                raise  # the request-size limit
             except Exception:
                 raise _bad("Malformed multipart body.", "bad_multipart") from None
             # `title` fields pair with `text` fields by position.
@@ -706,9 +860,21 @@ def create_app(
             return _json_error(405, f"Method {request.method} is not allowed here.", "method_not_allowed", exc.headers)
         return _json_error(exc.status_code, str(exc.detail), "http_error")
 
-    # Middleware: the last one added is the outermost. Order outside-in: CORS, path, errors, auth.
+    # Middleware: the last one added is the outermost. Order outside-in: CORS, path, errors, body limit, auth.
+    # Without a key the local guard takes the place of auth.
     if api_key:
         app.add_middleware(_AuthMiddleware, api_key=api_key)
+    else:
+        any_origin = cors is True
+        if any_origin:
+            log.warning("cors=True without an API key: any website can read and change every notebook.")
+        origins = [] if cors is False or cors is None or cors is True else ([cors] if isinstance(cors, str) else list(cors))
+        app.add_middleware(
+            _LocalGuardMiddleware,
+            allowed_hosts=None if "*" in allowed_hosts else allowed_hosts,
+            allowed_origins=None if any_origin else origins,
+        )
+    app.add_middleware(_BodyLimitMiddleware, max_bytes=_REQUEST_BYTES_PER_UPLOAD * max(DEFAULT_MAX_UPLOAD, max_upload_bytes))
     app.add_middleware(_ErrorMiddleware)
     app.add_middleware(_NormalizePathMiddleware)
     if cors is not False and cors is not None:
