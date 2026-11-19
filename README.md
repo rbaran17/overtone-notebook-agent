@@ -69,6 +69,20 @@ cd backend && overtone serve
 
 Every setting is listed in [.env.example](.env.example). Run `overtone info` to see what the engine picked up.
 
+### Web UI settings
+
+The browser calls `/api/*` on the web UI's own origin and Next.js forwards it to the engine. Set these in the shell that runs the command, or in `.env.local` at the repository root.
+
+| Setting | Default | Read by | What it does |
+| --- | --- | --- | --- |
+| `OVERTONE_API_URL` | `http://127.0.0.1:8787` | `npm run dev`, `npm run build` | Where `/api/*` is forwarded. A production build keeps the address it was built with |
+| `OVERTONE_API_TIMEOUT` | `600` | `npm run dev`, `npm run start` | Seconds the web UI waits while the engine sends nothing |
+
+Two limits apply to everything that goes through `/api`. Both are set in [next.config.ts](next.config.ts), because the Next.js defaults (30 seconds and 10 MB) break ordinary use.
+
+- **Timeout: 10 minutes of silence.** When the engine sends no bytes for this long, the web UI drops the request and answers `500 Internal Server Error`. It is an idle timeout, so it also covers a pause in the middle of a streamed chat answer. Ten minutes is the read timeout of the engine's Claude client: the web UI waits for the engine as long as the engine waits for the model. Raise `OVERTONE_API_TIMEOUT` for a slower model, lower it to fail sooner. It cannot be switched off. `POST /oneshot` with an audio overview can stay silent for longer than this; call it on the engine directly.
+- **Request size: 51 MB.** That is the engine's 50 MB per-file limit plus room for the multipart framing. Next.js holds each forwarded request body in memory until the engine has answered, which costs about as much memory as the file itself, so the web UI uploads one file per request, one at a time, and turns away a file over 50 MB before sending it. Next.js does not refuse a larger body: it forwards the first 51 MB, the engine waits for the rest, and the request ends in a 500 when the timeout runs out. Send anything larger straight to the engine. To change the limit, set `MAX_UPLOAD_BYTES` in [src/lib/limits.ts](src/lib/limits.ts) to the engine's `max_upload_bytes`.
+
 ## Use it headless
 
 Runnable versions of everything below are in [examples/](examples/), with sample sources.
@@ -188,7 +202,7 @@ Two modes: **conversation** (talk to the notebook) and **podcast** (pause an epi
 ```bash
 cd backend && python -m pytest          # 467 tests: engine, agents, workflows, API, CLI, evals; no network
 overtone eval --mock                    # evaluation suite on the stand-in model
-npm run test:client                     # 32 tests: TypeScript client and live voice session
+npm run test:client                     # 37 tests: TypeScript client and live voice session
 npm run lint && npm run typecheck       # web UI
 ```
 

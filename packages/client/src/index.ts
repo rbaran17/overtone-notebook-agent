@@ -230,20 +230,33 @@ export function createClient(opts: ClientOptions): OvertoneClient {
       },
 
       async addFiles(notebookId: ID, files: File[]): Promise<Source[]> {
-        if (files.length === 0) {
-          const none: Source[] = [];
-          Object.defineProperty(none, "errors", { value: [] as ErrorItem[] });
-          return none;
+        const result: Source[] = [];
+        const errors: ErrorItem[] = [];
+        let firstFailure: unknown;
+        // One request per file, in turn. No request is then larger than one file, which is what a
+        // reverse proxy's body limit is sized for (the web UI's /api proxy cuts a longer body short
+        // instead of refusing it), and a failed request costs one file, not the batch.
+        for (const file of files) {
+          const form = new FormData();
+          form.append("file", file, file.name);
+          try {
+            const body = await postForm<{ sources?: Source[]; errors?: ErrorItem[] }>(
+              `/notebooks/${enc(notebookId)}/sources`,
+              form,
+            );
+            if (!body.sources?.length) throw sourceFailure(body.errors ?? []);
+            result.push(...body.sources);
+            errors.push(...(body.errors ?? []));
+          } catch (err) {
+            firstFailure ??= err;
+            errors.push({
+              name: file.name,
+              error: err instanceof Error ? err.message : String(err),
+              code: err instanceof OvertoneError ? err.code : "request_failed",
+            });
+          }
         }
-        const form = new FormData();
-        for (const file of files) form.append("file", file, file.name);
-        const body = await postForm<{ sources?: Source[]; errors?: ErrorItem[] }>(
-          `/notebooks/${enc(notebookId)}/sources`,
-          form,
-        );
-        const errors = body.errors ?? [];
-        if (!body.sources?.length) throw sourceFailure(errors);
-        const result: Source[] = [...body.sources];
+        if (result.length === 0 && firstFailure !== undefined) throw firstFailure;
         // Partial failures stay visible without changing the array's shape.
         Object.defineProperty(result, "errors", { value: errors });
         return result;
