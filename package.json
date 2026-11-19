@@ -33,6 +33,6 @@
     "tailwindcss": "4.3.3",
     "tsup": "*",
     "tsx": "*",
-    "typescript": "^5"
+    "typescript": "^7"
   }
 }
