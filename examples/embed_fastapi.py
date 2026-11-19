@@ -28,6 +28,8 @@ def home() -> dict[str, str]:
 
 
 # Everything Overtone serves now lives under /overtone. Pass api_key="..." to require a bearer token.
+# Without a key it answers only to localhost and IP addresses, and refuses writes from other websites.
+# Served under a DNS name with your own auth in front of the mount, pass allowed_hosts=["app.example.com"].
 app.mount("/overtone", create_app(engine))
 
 
