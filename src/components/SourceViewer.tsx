@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type Source } from "@/lib/api";
+import { isHttpUrl } from "./Markdown";
 import { estimateWords, hostOf, sourceTypeLabel } from "./SourcesPanel";
 import { EmptyState, Eyebrow, errorMessage, Modal, Notice, Spinner } from "./ui";
 
@@ -36,10 +37,6 @@ function locateQuote(text: string, quote: string): { start: number; end: number 
     if (match) return { start: match.index, end: match.index + match[0].length };
   }
   return null;
-}
-
-function isHttpUrl(value: string): boolean {
-  return /^https?:\/\//i.test(value);
 }
 
 export function SourceViewer({ sourceId, quote, onClose }: SourceViewerProps) {
@@ -115,7 +112,7 @@ export function SourceViewer({ sourceId, quote, onClose }: SourceViewerProps) {
                 <a
                   href={source.origin}
                   target="_blank"
-                  rel="noreferrer"
+                  rel="noreferrer noopener"
                   title={hostOf(source.origin)}
                   className="max-w-full truncate text-accent underline underline-offset-2"
                 >

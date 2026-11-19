@@ -60,6 +60,7 @@ cd backend && overtone eval --mock --report eval-report.md
 npm run lint
 npm run typecheck
 npm run test:client
+npm run test:web
 npm run build
 ```
 

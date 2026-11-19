@@ -1,10 +1,9 @@
 "use client";
 
 import { FileText, MessageSquare } from "lucide-react";
-import ReactMarkdown from "react-markdown";
+import { Markdown } from "@/components/Markdown";
 import type { NotebookGuide } from "@/lib/api";
 import { EmptyState, Eyebrow } from "@/components/ui";
-import { REMARK_PLUGINS } from "./AnswerText";
 import type { GuideStatus } from "./useNotebookGuide";
 
 interface EmptyChatProps {
@@ -58,7 +57,7 @@ export function EmptyChat({ hasSources, guide, canAsk, onAsk }: EmptyChatProps) 
         <div className="space-y-3">
           <Eyebrow>Notebook guide</Eyebrow>
           <div className="prose-ot text-[15px]">
-            <ReactMarkdown remarkPlugins={REMARK_PLUGINS}>{data.summary}</ReactMarkdown>
+            <Markdown>{data.summary}</Markdown>
           </div>
         </div>
       )}

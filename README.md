@@ -42,7 +42,7 @@ OVERTONE_MOCK=1 overtone serve     # PowerShell: $env:OVERTONE_MOCK=1; overtone 
 ```
 
 ```bash
-# 2. Web UI (second terminal, repository root): http://localhost:3000
+# 2. Web UI (second terminal, repository root): http://127.0.0.1:3000, this machine only
 npm install
 npm run dev
 ```
@@ -68,6 +68,33 @@ cd backend && overtone serve
 | `ELEVENLABS_API_KEY` | Rendered podcast audio (alternative) |
 
 Every setting is listed in [.env.example](.env.example). Run `overtone info` to see what the engine picked up.
+
+## Web UI and network access
+
+`npm run dev` and `npm start` listen on `127.0.0.1` only. The UI reaches the engine one way: `/api/*` on its own origin, forwarded by [src/proxy.ts](src/proxy.ts). Before forwarding, the proxy
+
+- answers only when `Host` is `localhost`, an IP address or a name in `OVERTONE_UI_ALLOWED_HOSTS`, which is what stops a DNS-rebinding page;
+- refuses requests that come from another origin or site (`Origin`, `Sec-Fetch-Site`);
+- attaches `OVERTONE_API_KEY` as the bearer key in place of anything the client sent, so the engine can require a key and the browser never holds it.
+
+The UI also sends a Content-Security-Policy and never loads images from model-written Markdown, so text planted in a source cannot make the page fetch anything from another server on its own (links still go where they say, when you click them).
+
+Set these in the shell that runs the UI, or in `.env.local` at the repository root:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `OVERTONE_API_URL` | `http://127.0.0.1:8787` | Where `/api/*` is forwarded. Visible to UI users in a response header, so no credentials in it. |
+| `OVERTONE_API_KEY` | none | The engine's key, attached on the server. Use the same value the engine was started with. |
+| `OVERTONE_UI_ALLOWED_HOSTS` | none | Extra host names the UI may be reached under, comma-separated. |
+
+To use the UI from another device, opt in explicitly, with a key on both sides:
+
+```bash
+OVERTONE_API_KEY=change-me overtone serve              # engine, still on 127.0.0.1
+OVERTONE_API_KEY=change-me npm run dev -- -H 0.0.0.0   # UI on every interface (or name one address)
+```
+
+Everyone who can reach that port can then read and change every notebook: the UI has no login and presents the key on their behalf. For anything other than loopback, set `OVERTONE_API_KEY` for both the engine and the UI rather than widening host lists, and put the UI behind your own authentication. A reverse proxy in front of it must pass `Host` and `X-Forwarded-Proto` through, and its public name goes in `OVERTONE_UI_ALLOWED_HOSTS`.
 
 ## Use it headless
 
@@ -189,6 +216,7 @@ Two modes: **conversation** (talk to the notebook) and **podcast** (pause an epi
 cd backend && python -m pytest          # 467 tests: engine, agents, workflows, API, CLI, evals; no network
 overtone eval --mock                    # evaluation suite on the stand-in model
 npm run test:client                     # 32 tests: TypeScript client and live voice session
+npm run test:web                        # 45 tests: the UI's /api proxy rules and Markdown rendering
 npm run lint && npm run typecheck       # web UI
 ```
 

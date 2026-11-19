@@ -68,5 +68,8 @@ jobs:
       - name: Client tests
         run: npm run test:client
 
+      - name: Web UI tests
+        run: npm run test:web
+
       - name: Build
         run: npm run build

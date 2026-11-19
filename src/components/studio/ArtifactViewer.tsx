@@ -1,9 +1,8 @@
 "use client";
 
 import { Check, Copy, Download } from "lucide-react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import { useEffect, useRef, useState } from "react";
+import { Markdown } from "@/components/Markdown";
 import { Button, EmptyState, Modal } from "@/components/ui";
 import type { Artifact } from "@/lib/api";
 import { KIND_META } from "./kinds";
@@ -70,7 +69,7 @@ export function ArtifactViewer({ artifact, onClose }: ArtifactViewerProps) {
     >
       {content ? (
         <div className="prose-ot mx-auto max-w-2xl text-[15px]">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+          <Markdown>{content}</Markdown>
         </div>
       ) : (
         <div className="flex flex-col gap-3">

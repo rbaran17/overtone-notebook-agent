@@ -6,13 +6,14 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -H 127.0.0.1",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -H 127.0.0.1",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "build:client": "npm run build -w @overtone/client",
-    "test:client": "tsx --test packages/client/test/*.test.ts"
+    "test:client": "tsx --test packages/client/test/*.test.ts",
+    "test:web": "tsx --test test/*.test.ts test/*.test.tsx"
   },
   "dependencies": {
     "@overtone/client": "*",

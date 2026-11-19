@@ -43,9 +43,10 @@ app = create_app(engine, api_key="s3cret", max_upload_bytes=100 * 1024 * 1024)
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `engine` | `create_engine()` on first request | The engine to serve. It is available as `app.state.engine` |
-| `api_key` | none | When set, requests need `Authorization: Bearer <api_key>` (see Auth) |
+| `api_key` | `OVERTONE_API_KEY` | When set, requests need `Authorization: Bearer <api_key>` (see Auth). Pass `""` to run without a key even when the variable is set |
 | `cors` | `False` | `True` allows any origin. A string or list allows only those origins (see CORS) |
-| `max_upload_bytes` | 50 MB | Largest accepted upload per file |
+| `max_upload_bytes` | 50 MB | Largest accepted upload per file. A whole request may be four times this |
+| `allowed_hosts` | `OVERTONE_ALLOWED_HOSTS` | Without a key: extra host names the API answers to (see Without a key). `"*"` answers to any name |
 
 `serve()` takes `host` (default `127.0.0.1`), `port` (default `8787`) and the same options as `create_app`.
 
@@ -66,7 +67,8 @@ Mounting is covered by the test suite for FastAPI parents; other Starlette-based
 
 ## Auth and CORS
 
-- **Auth.** With `api_key` set, every request must send `Authorization: Bearer <api_key>`, except `OPTIONS` (preflight) and `GET /health`. Audio is the one exception: `GET /artifacts/{id}/audio` also accepts `?key=<api_key>`, because an `<audio src>` element cannot send headers. A missing or wrong key returns `401` with `WWW-Authenticate: Bearer`. Keys are compared in constant time.
+- **Auth.** With `api_key` set, every request must send `Authorization: Bearer <api_key>`, except `OPTIONS` (preflight) and `GET /health`. Audio is the one exception: `GET /artifacts/{id}/audio` also accepts `?key=<api_key>`, because an `<audio src>` element cannot send headers. A missing or wrong key returns `401` with `WWW-Authenticate: Bearer`. Keys are compared in constant time. The bundled web UI does not use `?key=` or hold the key at all: its `/api` proxy (`src/proxy.ts`) reads `OVERTONE_API_KEY` on the server and attaches the header to every forwarded request, audio included.
+- **Without a key.** A keyless API trusts whoever can reach it, so it must not be reachable by web pages you visit. It answers only when `Host` is `localhost`, an IP address or a name in `allowed_hosts`; a DNS-rebinding page fails that check because the browser sends the page's own name. It refuses `POST`, `PATCH` and `DELETE` whose `Origin` is another website; requests with no `Origin` (curl, scripts, server-side clients), from a loopback origin (the bundled web UI) or from an origin on the CORS list pass. Both refusals are `403`. Behind a reverse proxy or under a DNS name, set `OVERTONE_ALLOWED_HOSTS` to that name, or set a key: with a key, the key is the only check.
 - **CORS.** Off by default. `cors=True` sends `Access-Control-Allow-Origin: *`. A string or list echoes the request `Origin` only when it is listed, and sends `Vary: Origin`. Preflight `OPTIONS` requests return `204` with `Access-Control-Allow-Methods: GET,POST,PATCH,DELETE,OPTIONS`, `Access-Control-Allow-Headers: Authorization, Content-Type` and `Access-Control-Max-Age: 86400`. Every response, including errors and SSE streams, carries `Access-Control-Expose-Headers: Content-Range, Content-Length`.
 - **Trailing slashes** are accepted on every route (`/notebooks/{id}/` works).
 
@@ -84,10 +86,11 @@ Every error is JSON:
 | 400 | `bad_request` | The body has the wrong shape. The message names the first bad field, for example `options.format: Input should be ...` |
 | 400 | `empty_message`, `no_sources`, `multipart_required`, `unsupported_source`, `bad_kind`, `missing_instructions`, `bad_sdp`, `missing_artifact`, `no_script`, `empty_transcript`, `bad_multipart` | The request is well formed but cannot be served as sent |
 | 401 | `unauthorized` | Missing or wrong API key |
+| 403 | `forbidden_host`, `forbidden_origin` | Without a key: the request was addressed to a host name that is not allowed, or came from another website (see Without a key) |
 | 404 | `not_found` | Unknown notebook, source, artifact or route |
 | 404 | `no_audio` | The artifact has no rendered audio |
 | 405 | `method_not_allowed` | Known path, wrong method. The `Allow` header lists the valid methods |
-| 413 | `too_large` | A file exceeds `max_upload_bytes`. Reported per file inside `errors` |
+| 413 | `too_large` | A file exceeds `max_upload_bytes` (reported per file inside `errors`), a document is too large when unpacked, or the whole request exceeds four times `max_upload_bytes` |
 | 416 | (none) | Unsatisfiable `Range`. The response has `Content-Range: bytes */<total>` |
 | 422 | `empty_source` | No readable text could be extracted |
 | 500 | `internal` | Anything else. The exception is logged on the server (`overtone.api` logger) and never sent |
